@@ -252,413 +252,413 @@ def update_preferences(
         if reminder_hour is not None:
             prefs.reminder_hour = int(max(0, min(23, reminder_hour)))
         if allow_notifications is not None:
-			prefs.allow_notifications = bool(allow_notifications)
-		session.add(prefs)
-		session.commit()
-		session.refresh(prefs)
-		logger.info("Updated preferences for user {}", user_id)
-		return prefs
+            prefs.allow_notifications = bool(allow_notifications)
+        session.add(prefs)
+        session.commit()
+        session.refresh(prefs)
+        logger.info("Updated preferences for user {}", user_id)
+        return prefs
 
 
 def _compute_accuracy(rep_count: int, warnings: int) -> float:
-	if rep_count <= 0:
-		return 0.0
-	return max(0.0, 1.0 - (warnings / max(rep_count, 1)))
+    if rep_count <= 0:
+        return 0.0
+    return max(0.0, 1.0 - (warnings / max(rep_count, 1)))
 
 
 def _compute_consistency(rep_count: int, duration_seconds: float) -> float:
-	if rep_count <= 0 or duration_seconds <= 0:
-		return 0.0
-	reps_per_minute = rep_count / (duration_seconds / 60.0)
-	return min(1.0, reps_per_minute / 60.0)
+    if rep_count <= 0 or duration_seconds <= 0:
+        return 0.0
+    reps_per_minute = rep_count / (duration_seconds / 60.0)
+    return min(1.0, reps_per_minute / 60.0)
 
 
 def _xp_for_next_level(level: int) -> int:
-	return 100 + (level - 1) * 50
+    return 100 + (level - 1) * 50
 
 
 def _grant_experience(session: Session, user: User, xp_earned: int) -> None:
-	if xp_earned <= 0:
-		return
-	user.experience_points += xp_earned
-	leveled_up = False
-	while user.experience_points >= _xp_for_next_level(user.level):
-		user.experience_points -= _xp_for_next_level(user.level)
-		user.level += 1
-		leveled_up = True
-	session.add(user)
-	if leveled_up:
-		unlock_achievement(
-			user.id,
-			code=f"level_{user.level}",
-			name=f"Level {user.level}",
-			description="You levelled up! Keep crushing those reps.",
-			session=session,
-		)
+    if xp_earned <= 0:
+        return
+    user.experience_points += xp_earned
+    leveled_up = False
+    while user.experience_points >= _xp_for_next_level(user.level):
+        user.experience_points -= _xp_for_next_level(user.level)
+        user.level += 1
+        leveled_up = True
+    session.add(user)
+    if leveled_up:
+        unlock_achievement(
+            user.id,
+            code=f"level_{user.level}",
+            name=f"Level {user.level}",
+            description="You levelled up! Keep crushing those reps.",
+            session=session,
+        )
 
 
 def record_session(
-	*,
-	user_id: str,
-	exercise: str,
-	rep_count: int,
-	warnings: int,
-	started_at: dt.datetime,
-	ended_at: dt.datetime,
-	session_metadata: Optional[Dict[str, object]] = None,
+    *,
+    user_id: str,
+    exercise: str,
+    rep_count: int,
+    warnings: int,
+    started_at: dt.datetime,
+    ended_at: dt.datetime,
+    session_metadata: Optional[Dict[str, object]] = None,
 ) -> SessionRecord:
-	accuracy = _compute_accuracy(rep_count, warnings)
-	consistency = _compute_consistency(rep_count, (ended_at - started_at).total_seconds())
-	xp_earned = max(0, int(rep_count * (0.6 + accuracy + consistency)))
-	record = SessionRecord(
-		user_id=user_id,
-		exercise=exercise,
-		rep_count=rep_count,
-		accuracy=accuracy,
-		consistency=consistency,
-		warnings_count=warnings,
-		xp_earned=xp_earned,
-		started_at=started_at,
-		ended_at=ended_at,
-		session_metadata=session_metadata or {},
-	)
-	with session_scope() as session:
-		session.add(record)
-		session.commit()
-		session.refresh(record)
-		_update_daily_progress(session, record)
-		_grant_experience(session, session.get(User, user_id), xp_earned)
-		_maybe_create_recommendation(session, record)
-		_maybe_unlock_achievements(session, record)
-	logger.info(
-		"Session recorded for user {} | exercise={} reps={} accuracy={:.2f} consistency={:.2f} xp={}",
-		user_id,
-		exercise,
-		rep_count,
-		record.accuracy,
-		record.consistency,
-		xp_earned,
-	)
-	return record
+    accuracy = _compute_accuracy(rep_count, warnings)
+    consistency = _compute_consistency(rep_count, (ended_at - started_at).total_seconds())
+    xp_earned = max(0, int(rep_count * (0.6 + accuracy + consistency)))
+    record = SessionRecord(
+        user_id=user_id,
+        exercise=exercise,
+        rep_count=rep_count,
+        accuracy=accuracy,
+        consistency=consistency,
+        warnings_count=warnings,
+        xp_earned=xp_earned,
+        started_at=started_at,
+        ended_at=ended_at,
+        session_metadata=session_metadata or {},
+    )
+    with session_scope() as session:
+        session.add(record)
+        session.commit()
+        session.refresh(record)
+        _update_daily_progress(session, record)
+        _grant_experience(session, session.get(User, user_id), xp_earned)
+        _maybe_create_recommendation(session, record)
+        _maybe_unlock_achievements(session, record)
+    logger.info(
+        "Session recorded for user {} | exercise={} reps={} accuracy={:.2f} consistency={:.2f} xp={}",
+        user_id,
+        exercise,
+        rep_count,
+        record.accuracy,
+        record.consistency,
+        xp_earned,
+    )
+    return record
 
 
 def _update_daily_progress(session: Session, record: SessionRecord) -> None:
-	day = record.ended_at.date()
-	progress = session.exec(
-		select(DailyProgress).where(
-			DailyProgress.user_id == record.user_id,
-			DailyProgress.date == day,
-			DailyProgress.exercise == record.exercise,
-		)
-	).first()
-	target_reps = _compute_target_for_day(record.user_id, record.exercise, session)
-	if progress is None:
-		progress = DailyProgress(
-			user_id=record.user_id,
-			date=day,
-			exercise=record.exercise,
-			reps_completed=record.rep_count,
-			target_reps=target_reps,
-			accuracy=record.accuracy,
-			consistency=record.consistency,
-			warnings_count=record.warnings_count,
-		)
-	else:
-		progress.reps_completed += record.rep_count
-		progress.target_reps = target_reps
-		progress.accuracy = (progress.accuracy + record.accuracy) / 2.0
-		progress.consistency = (progress.consistency + record.consistency) / 2.0
-		progress.warnings_count += record.warnings_count
-	session.add(progress)
-	session.commit()
+    day = record.ended_at.date()
+    progress = session.exec(
+        select(DailyProgress).where(
+            DailyProgress.user_id == record.user_id,
+            DailyProgress.date == day,
+            DailyProgress.exercise == record.exercise,
+        )
+    ).first()
+    target_reps = _compute_target_for_day(record.user_id, record.exercise, session)
+    if progress is None:
+        progress = DailyProgress(
+            user_id=record.user_id,
+            date=day,
+            exercise=record.exercise,
+            reps_completed=record.rep_count,
+            target_reps=target_reps,
+            accuracy=record.accuracy,
+            consistency=record.consistency,
+            warnings_count=record.warnings_count,
+        )
+    else:
+        progress.reps_completed += record.rep_count
+        progress.target_reps = target_reps
+        progress.accuracy = (progress.accuracy + record.accuracy) / 2.0
+        progress.consistency = (progress.consistency + record.consistency) / 2.0
+        progress.warnings_count += record.warnings_count
+    session.add(progress)
+    session.commit()
 
 
 def _compute_target_for_day(user_id: str, exercise: str, session: Session) -> int:
-	prefs = session.exec(select(UserPreference).where(UserPreference.user_id == user_id)).first()
-	if prefs is None:
-		return 20
-	base = prefs.daily_goal
-	streak = compute_streak(user_id, exercise, session=session)
-	bonus = min(10, streak * 2)
-	return base + bonus
+    prefs = session.exec(select(UserPreference).where(UserPreference.user_id == user_id)).first()
+    if prefs is None:
+        return 20
+    base = prefs.daily_goal
+    streak = compute_streak(user_id, exercise, session=session)
+    bonus = min(10, streak * 2)
+    return base + bonus
 
 
 def compute_streak(user_id: str, exercise: str, *, session: Optional[Session] = None) -> int:
-	owns_session = session is None
-	if owns_session:
-		session = Session(_get_engine())
-	assert session is not None
-	try:
-		today = dt.date.today()
-		streak = 0
-		for offset in range(0, 30):
-			day = today - dt.timedelta(days=offset)
-			entry = session.exec(
-				select(DailyProgress).where(
-					DailyProgress.user_id == user_id,
-					DailyProgress.exercise == exercise,
-					DailyProgress.date == day,
-				)
-			).first()
-			if entry and entry.reps_completed > 0:
-				streak += 1
-			else:
-				break
-		return streak
-	finally:
-		if owns_session:
-			session.close()
+    owns_session = session is None
+    if owns_session:
+        session = Session(_get_engine())
+    assert session is not None
+    try:
+        today = dt.date.today()
+        streak = 0
+        for offset in range(0, 30):
+            day = today - dt.timedelta(days=offset)
+            entry = session.exec(
+                select(DailyProgress).where(
+                    DailyProgress.user_id == user_id,
+                    DailyProgress.exercise == exercise,
+                    DailyProgress.date == day,
+                )
+            ).first()
+            if entry and entry.reps_completed > 0:
+                streak += 1
+            else:
+                break
+        return streak
+    finally:
+        if owns_session:
+            session.close()
 
 
 def unlock_achievement(
-	user_id: str,
-	*,
-	code: str,
-	name: str,
-	description: str,
-	session: Optional[Session] = None,
+    user_id: str,
+    *,
+    code: str,
+    name: str,
+    description: str,
+    session: Optional[Session] = None,
 ) -> Optional[Achievement]:
-	owns_session = session is None
-	if owns_session:
-		session = Session(_get_engine())
-	assert session is not None
-	try:
-		existing = session.exec(
-			select(Achievement).where(Achievement.user_id == user_id, Achievement.code == code)
-		).first()
-		if existing:
-			return None
-		achievement = Achievement(user_id=user_id, code=code, name=name, description=description)
-		session.add(achievement)
-		session.commit()
-		session.refresh(achievement)
-		logger.info("Achievement unlocked for user {}: {}", user_id, code)
-		return achievement
-	finally:
-		if owns_session:
-			session.close()
+    owns_session = session is None
+    if owns_session:
+        session = Session(_get_engine())
+    assert session is not None
+    try:
+        existing = session.exec(
+            select(Achievement).where(Achievement.user_id == user_id, Achievement.code == code)
+        ).first()
+        if existing:
+            return None
+        achievement = Achievement(user_id=user_id, code=code, name=name, description=description)
+        session.add(achievement)
+        session.commit()
+        session.refresh(achievement)
+        logger.info("Achievement unlocked for user {}: {}", user_id, code)
+        return achievement
+    finally:
+        if owns_session:
+            session.close()
 
 
 def _maybe_unlock_achievements(session: Session, record: SessionRecord) -> None:
-	if record.rep_count <= 0:
-		return
-	unlock_achievement(
-		record.user_id,
-		code="first_session",
-		name="First Steps",
-		description="Completed the first tracked workout session.",
-		session=session,
-	)
-	if record.rep_count >= 50:
-		unlock_achievement(
-			record.user_id,
-			code="fifty_reps",
-			name="Rep Machine",
-			description="Logged 50+ reps in a single session.",
-			session=session,
-		)
-	if record.accuracy >= 0.9:
-		unlock_achievement(
-			record.user_id,
-			code="form_master",
-			name="Form Master",
-			description="Maintained 90%+ form accuracy.",
-			session=session,
-		)
-	prefs = session.exec(select(UserPreference).where(UserPreference.user_id == record.user_id)).first()
-	if prefs and record.rep_count >= prefs.daily_goal:
-		unlock_achievement(
-			record.user_id,
-			code="goal_crusher",
-			name="Goal Crusher",
-			description="Crushed the daily goal in a single run.",
-			session=session,
-		)
-	streak = compute_streak(record.user_id, record.exercise, session=session)
-	if streak >= 5:
-		unlock_achievement(
-			record.user_id,
-			code=f"streak_{streak}",
-			name=f"{streak}-Day Streak",
-			description=f"Maintained a {streak}-day streak on {record.exercise}.",
-			session=session,
-		)
+    if record.rep_count <= 0:
+        return
+    unlock_achievement(
+        record.user_id,
+        code="first_session",
+        name="First Steps",
+        description="Completed the first tracked workout session.",
+        session=session,
+    )
+    if record.rep_count >= 50:
+        unlock_achievement(
+            record.user_id,
+            code="fifty_reps",
+            name="Rep Machine",
+            description="Logged 50+ reps in a single session.",
+            session=session,
+        )
+    if record.accuracy >= 0.9:
+        unlock_achievement(
+            record.user_id,
+            code="form_master",
+            name="Form Master",
+            description="Maintained 90%+ form accuracy.",
+            session=session,
+        )
+    prefs = session.exec(select(UserPreference).where(UserPreference.user_id == record.user_id)).first()
+    if prefs and record.rep_count >= prefs.daily_goal:
+        unlock_achievement(
+            record.user_id,
+            code="goal_crusher",
+            name="Goal Crusher",
+            description="Crushed the daily goal in a single run.",
+            session=session,
+        )
+    streak = compute_streak(record.user_id, record.exercise, session=session)
+    if streak >= 5:
+        unlock_achievement(
+            record.user_id,
+            code=f"streak_{streak}",
+            name=f"{streak}-Day Streak",
+            description=f"Maintained a {streak}-day streak on {record.exercise}.",
+            session=session,
+        )
 
 
 def _maybe_create_recommendation(session: Session, record: SessionRecord) -> None:
-	if record.rep_count < 1:
-		return
-	prefs = session.exec(select(UserPreference).where(UserPreference.user_id == record.user_id)).first()
-	if not prefs:
-		return
-	if record.accuracy > 0.85 and record.consistency > 0.6 and prefs.smart_goal:
-		prefs.daily_goal = int(prefs.daily_goal * 1.1) + 1
-		session.add(prefs)
-		recommendation = AdaptiveRecommendation(
-			user_id=record.user_id,
-			suggestion=f"Great work! Increase {record.exercise} goal to {prefs.daily_goal} reps.",
-			category="progression",
-		)
-		session.add(recommendation)
-		session.commit()
+    if record.rep_count < 1:
+        return
+    prefs = session.exec(select(UserPreference).where(UserPreference.user_id == record.user_id)).first()
+    if not prefs:
+        return
+    if record.accuracy > 0.85 and record.consistency > 0.6 and prefs.smart_goal:
+        prefs.daily_goal = int(prefs.daily_goal * 1.1) + 1
+        session.add(prefs)
+        recommendation = AdaptiveRecommendation(
+            user_id=record.user_id,
+            suggestion=f"Great work! Increase {record.exercise} goal to {prefs.daily_goal} reps.",
+            category="progression",
+        )
+        session.add(recommendation)
+        session.commit()
 
 
 def list_achievements(user_id: str) -> List[Dict[str, object]]:
-	with session_scope() as session:
-		rows = session.exec(
-			select(Achievement).where(Achievement.user_id == user_id).order_by(Achievement.earned_at.desc())
-		).all()
-		return [
-			{
-				"code": row.code,
-				"name": row.name,
-				"description": row.description,
-				"earned_at": row.earned_at,
-			}
-			for row in rows
-		]
+    with session_scope() as session:
+        rows = session.exec(
+            select(Achievement).where(Achievement.user_id == user_id).order_by(Achievement.earned_at.desc())
+        ).all()
+        return [
+            {
+                "code": row.code,
+                "name": row.name,
+                "description": row.description,
+                "earned_at": row.earned_at,
+            }
+            for row in rows
+        ]
 
 
 def list_reminders(user_id: str, include_completed: bool = False) -> List[Dict[str, object]]:
-	with session_scope() as session:
-		query = select(UserReminder).where(UserReminder.user_id == user_id)
-		if not include_completed:
-			query = query.where(UserReminder.completed.is_(False))
-		rows = session.exec(query.order_by(UserReminder.remind_at.asc())).all()
-		return [
-			{
-				"id": row.id,
-				"message": row.message,
-				"remind_at": row.remind_at,
-				"completed": row.completed,
-			}
-			for row in rows
-		]
+    with session_scope() as session:
+        query = select(UserReminder).where(UserReminder.user_id == user_id)
+        if not include_completed:
+            query = query.where(UserReminder.completed.is_(False))
+        rows = session.exec(query.order_by(UserReminder.remind_at.asc())).all()
+        return [
+            {
+                "id": row.id,
+                "message": row.message,
+                "remind_at": row.remind_at,
+                "completed": row.completed,
+            }
+            for row in rows
+        ]
 
 
 def schedule_reminder(user_id: str, message: str, remind_at: dt.datetime) -> UserReminder:
-	reminder = UserReminder(user_id=user_id, message=message, remind_at=remind_at)
-	with session_scope() as session:
-		session.add(reminder)
-		session.commit()
-		session.refresh(reminder)
-		return reminder
+    reminder = UserReminder(user_id=user_id, message=message, remind_at=remind_at)
+    with session_scope() as session:
+        session.add(reminder)
+        session.commit()
+        session.refresh(reminder)
+        return reminder
 
 
 def complete_reminder(reminder_id: int, user_id: str) -> None:
-	with session_scope() as session:
-		reminder = session.get(UserReminder, reminder_id)
-		if reminder and reminder.user_id == user_id:
-			reminder.completed = True
-			session.add(reminder)
-			session.commit()
+    with session_scope() as session:
+        reminder = session.get(UserReminder, reminder_id)
+        if reminder and reminder.user_id == user_id:
+            reminder.completed = True
+            session.add(reminder)
+            session.commit()
 
 
 def get_dashboard(user_id: str) -> Dict[str, object]:
-	with session_scope() as session:
-		user = session.get(User, user_id)
-		if not user:
-			raise ValueError("User not found")
-		prefs = session.exec(select(UserPreference).where(UserPreference.user_id == user_id)).first()
-		progress_rows = session.exec(
-			select(DailyProgress)
-			.where(DailyProgress.user_id == user_id)
-			.order_by(DailyProgress.date.desc())
-		).all()
-		recommendations = session.exec(
-			select(AdaptiveRecommendation)
-			.where(AdaptiveRecommendation.user_id == user_id)
-			.order_by(AdaptiveRecommendation.created_at.desc())
-			.limit(10)
-		).all()
-		streak_targets = prefs.focus_exercises if prefs else ["pushup", "pullup", "squat"]
-		streaks = {exercise: compute_streak(user_id, exercise, session=session) for exercise in streak_targets}
-		timeline = [
-			{
-				"date": row.date.isoformat(),
-				"exercise": row.exercise,
-				"reps": row.reps_completed,
-				"target": row.target_reps,
-				"accuracy": round(row.accuracy, 2),
-				"consistency": round(row.consistency, 2),
-			}
-			for row in progress_rows
-		]
-		xp_to_next = max(0, _xp_for_next_level(user.level) - user.experience_points)
-		achievements = session.exec(
-			select(Achievement)
-			.where(Achievement.user_id == user_id)
-			.order_by(Achievement.earned_at.desc())
-		).all()
-		reminders = list_reminders(user_id)
-		social_suggestions = [
-			"Share your streak with friends for bonus accountability.",
-			"Invite a workout buddy to challenge your best rep count.",
-		]
-		return {
-			"user": {
-				"id": user.id,
-				"email": user.email,
-				"display_name": user.display_name,
-				"avatar_url": user.avatar_url,
-				"member_since": user.created_at,
-				"level": user.level,
-				"experience": user.experience_points,
-				"xp_to_next_level": xp_to_next,
-			},
-			"preferences": {
-				"level": prefs.level if prefs else "beginner",
-				"focus_exercises": streak_targets,
-				"daily_goal": prefs.daily_goal if prefs else 20,
-				"smart_goal": prefs.smart_goal if prefs else True,
-				"timezone": prefs.timezone if prefs else "UTC",
-				"reminder_hour": prefs.reminder_hour if prefs else 9,
-				"allow_notifications": prefs.allow_notifications if prefs else True,
-			},
-			"streaks": streaks,
-			"progress_timeline": timeline,
-			"recommendations": [
-				{
-					"id": rec.id,
-					"message": rec.suggestion,
-					"category": rec.category,
-					"created_at": rec.created_at,
-				}
-				for rec in recommendations
-			],
-			"achievements": [
-				{
-					"code": ach.code,
-					"name": ach.name,
-					"description": ach.description,
-					"earned_at": ach.earned_at,
-				}
-				for ach in achievements
-			],
-			"reminders": reminders,
-			"suggestions": social_suggestions,
-		}
+    with session_scope() as session:
+        user = session.get(User, user_id)
+        if not user:
+            raise ValueError("User not found")
+        prefs = session.exec(select(UserPreference).where(UserPreference.user_id == user_id)).first()
+        progress_rows = session.exec(
+            select(DailyProgress)
+            .where(DailyProgress.user_id == user_id)
+            .order_by(DailyProgress.date.desc())
+        ).all()
+        recommendations = session.exec(
+            select(AdaptiveRecommendation)
+            .where(AdaptiveRecommendation.user_id == user_id)
+            .order_by(AdaptiveRecommendation.created_at.desc())
+            .limit(10)
+        ).all()
+        streak_targets = prefs.focus_exercises if prefs else ["pushup", "pullup", "squat"]
+        streaks = {exercise: compute_streak(user_id, exercise, session=session) for exercise in streak_targets}
+        timeline = [
+            {
+                "date": row.date.isoformat(),
+                "exercise": row.exercise,
+                "reps": row.reps_completed,
+                "target": row.target_reps,
+                "accuracy": round(row.accuracy, 2),
+                "consistency": round(row.consistency, 2),
+            }
+            for row in progress_rows
+        ]
+        xp_to_next = max(0, _xp_for_next_level(user.level) - user.experience_points)
+        achievements = session.exec(
+            select(Achievement)
+            .where(Achievement.user_id == user_id)
+            .order_by(Achievement.earned_at.desc())
+        ).all()
+        reminders = list_reminders(user_id)
+        social_suggestions = [
+            "Share your streak with friends for bonus accountability.",
+            "Invite a workout buddy to challenge your best rep count.",
+        ]
+        return {
+            "user": {
+                "id": user.id,
+                "email": user.email,
+                "display_name": user.display_name,
+                "avatar_url": user.avatar_url,
+                "member_since": user.created_at,
+                "level": user.level,
+                "experience": user.experience_points,
+                "xp_to_next_level": xp_to_next,
+            },
+            "preferences": {
+                "level": prefs.level if prefs else "beginner",
+                "focus_exercises": streak_targets,
+                "daily_goal": prefs.daily_goal if prefs else 20,
+                "smart_goal": prefs.smart_goal if prefs else True,
+                "timezone": prefs.timezone if prefs else "UTC",
+                "reminder_hour": prefs.reminder_hour if prefs else 9,
+                "allow_notifications": prefs.allow_notifications if prefs else True,
+            },
+            "streaks": streaks,
+            "progress_timeline": timeline,
+            "recommendations": [
+                {
+                    "id": rec.id,
+                    "message": rec.suggestion,
+                    "category": rec.category,
+                    "created_at": rec.created_at,
+                }
+                for rec in recommendations
+            ],
+            "achievements": [
+                {
+                    "code": ach.code,
+                    "name": ach.name,
+                    "description": ach.description,
+                    "earned_at": ach.earned_at,
+                }
+                for ach in achievements
+            ],
+            "reminders": reminders,
+            "suggestions": social_suggestions,
+        }
 
 
 def list_sessions(user_id: str, limit: int = 20) -> List[Dict[str, object]]:
-	with session_scope() as session:
-		records = session.exec(
-			select(SessionRecord)
-			.where(SessionRecord.user_id == user_id)
-			.order_by(SessionRecord.ended_at.desc())
-			.limit(limit)
-		).all()
-		return [
-			{
-				"exercise": rec.exercise,
-				"rep_count": rec.rep_count,
-				"accuracy": round(rec.accuracy, 2),
-				"consistency": round(rec.consistency, 2),
-				"warnings": rec.warnings_count,
-				"xp": rec.xp_earned,
-				"started_at": rec.started_at,
-				"ended_at": rec.ended_at,
-			}
-			for rec in records
-		]
+    with session_scope() as session:
+        records = session.exec(
+            select(SessionRecord)
+            .where(SessionRecord.user_id == user_id)
+            .order_by(SessionRecord.ended_at.desc())
+            .limit(limit)
+        ).all()
+        return [
+            {
+                "exercise": rec.exercise,
+                "rep_count": rec.rep_count,
+                "accuracy": round(rec.accuracy, 2),
+                "consistency": round(rec.consistency, 2),
+                "warnings": rec.warnings_count,
+                "xp": rec.xp_earned,
+                "started_at": rec.started_at,
+                "ended_at": rec.ended_at,
+            }
+            for rec in records
+        ]
 
