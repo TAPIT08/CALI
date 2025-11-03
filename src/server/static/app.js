@@ -84,9 +84,8 @@ if (streamCard) {
 }
 
 let localMediaStream = null;
-let availableCameraDevices = [];
-let activeCameraId = null;
-let hasRequestedCameraPermission = false;
+let currentFacingMode = "environment";
+let canSwitchCamera = false;
 
 let socket = null;
 let statusPollTimer = null;
@@ -525,79 +524,16 @@ async function handleReminderSubmit(event) {
 async function setupLocalCameraUI() {
     if (!navigator.mediaDevices?.getUserMedia) {
         localCameraToggle.disabled = true;
-        localCameraSelect.disabled = true;
         localCameraHint.textContent = "Camera preview is not supported in this browser.";
         return;
     }
-
-    const setHint = (message) => {
-        localCameraHint.textContent = message;
-    };
-
-    const populateCameraOptions = (devices, selectedId) => {
-        localCameraSelect.innerHTML = "";
-        if (devices.length === 0) {
-            const option = document.createElement("option");
-            option.value = "";
-            option.textContent = "No cameras found";
-            localCameraSelect.appendChild(option);
-            localCameraSelect.disabled = true;
-            return;
-        }
-        devices.forEach((device, index) => {
-            const option = document.createElement("option");
-            option.value = device.id;
-            option.textContent = device.label || `Camera ${index + 1}`;
-            if (selectedId && option.value === selectedId) {
-                option.selected = true;
-            }
-            localCameraSelect.appendChild(option);
-        });
-        if (!selectedId) {
-            localCameraSelect.selectedIndex = 0;
-        }
-    };
-
-    const refreshCameraOptions = async ({ preserveHint = false } = {}) => {
-        try {
-            const devices = await navigator.mediaDevices.enumerateDevices();
-            availableCameraDevices = devices
-                .filter((device) => device.kind === "videoinput")
-                .map((device, index) => {
-                    const hasId = Boolean(device.deviceId);
-                    return {
-                        id: hasId ? device.deviceId : `default-${index}`,
-                        constraintId: hasId ? device.deviceId : undefined,
-                        label: device.label || `Camera ${index + 1}`,
-                    };
-                });
-            populateCameraOptions(availableCameraDevices, activeCameraId);
-            if (availableCameraDevices.length === 0) {
-                localCameraToggle.disabled = true;
-                localCameraSelect.disabled = true;
-                if (!preserveHint) {
-                    setHint("No camera devices detected. Connect a camera and click Refresh.");
-                }
-                return;
-            }
-            localCameraToggle.disabled = false;
-            localCameraSelect.disabled = false;
-            if (!activeCameraId || !availableCameraDevices.some((device) => device.id === activeCameraId)) {
-                activeCameraId = availableCameraDevices[0].id;
-                localCameraSelect.value = activeCameraId;
-            }
-            if (!preserveHint) {
-                setHint(hasRequestedCameraPermission
-                    ? "Select a camera and enable the preview."
-                    : "Enable camera to preview locally.");
-            }
-        } catch (err) {
-            console.warn("Could not enumerate devices", err);
-            if (!preserveHint) {
-                setHint("Cannot list camera devices. Check browser permissions.");
-            }
-        }
-    };
+    try {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        canSwitchCamera = devices.filter((device) => device.kind === "videoinput").length > 1;
+        localCameraSwitch.hidden = !canSwitchCamera;
+    } catch (err) {
+        console.warn("Could not enumerate devices", err);
+    }
 
     const stopLocalCamera = () => {
         if (localMediaStream) {
@@ -606,53 +542,39 @@ async function setupLocalCameraUI() {
         }
         localCameraVideo.srcObject = null;
         localCameraToggle.textContent = "Enable Local Camera";
-        if (availableCameraDevices.length === 0) {
-            setHint("No camera devices detected. Connect a camera and click Refresh.");
-        } else {
-            setHint("Enable camera to preview locally.");
-        }
+        localCameraHint.textContent = "Enable camera to preview locally.";
+        localCameraSwitch.disabled = true;
     };
 
-    const startLocalCamera = async (cameraId) => {
-        const selected = availableCameraDevices.find((device) => device.id === cameraId) || availableCameraDevices[0];
-        const constraints = {
-            audio: false,
-            video: {
-                width: { ideal: 1280 },
-                height: { ideal: 720 },
-            },
-        };
-        if (selected?.constraintId) {
-            constraints.video.deviceId = { exact: selected.constraintId };
-        } else {
-            constraints.video.facingMode = { ideal: "environment" };
-        }
+    const startLocalCamera = async (facingMode) => {
         try {
+            const constraints = {
+                audio: false,
+                video: {
+                    facingMode: { ideal: facingMode },
+                    width: { ideal: 1280 },
+                    height: { ideal: 720 },
+                },
+            };
             const stream = await navigator.mediaDevices.getUserMedia(constraints);
-            hasRequestedCameraPermission = true;
             if (localMediaStream) {
                 localMediaStream.getTracks().forEach((track) => track.stop());
             }
             localMediaStream = stream;
             localCameraVideo.srcObject = stream;
+            currentFacingMode = facingMode;
             localCameraToggle.textContent = "Disable Local Camera";
-            setHint("Local preview active.");
-            const settings = stream.getVideoTracks()[0]?.getSettings();
-            activeCameraId = selected?.id || settings?.deviceId || null;
-            await refreshCameraOptions({ preserveHint: true });
-            if (activeCameraId && localCameraSelect.value !== activeCameraId && availableCameraDevices.some((device) => device.id === activeCameraId)) {
-                localCameraSelect.value = activeCameraId;
-            }
+            localCameraHint.textContent = "Local preview active.";
+            localCameraSwitch.disabled = !canSwitchCamera;
         } catch (error) {
             console.error("Camera access failed", error);
-            if (error.name === "NotAllowedError" || error.name === "SecurityError") {
-                setHint("Camera permission denied. Enable access in your browser settings.");
-            } else if (error.name === "NotFoundError" || error.name === "OverconstrainedError") {
-                setHint("Selected camera is unavailable. Choose a different device.");
-            } else {
-                setHint(`Cannot access camera: ${error.message}`);
+            if (facingMode === "environment") {
+                return startLocalCamera("user");
             }
             stopLocalCamera();
+            localCameraHint.textContent = error.name === "NotAllowedError"
+                ? "Camera permission denied. Enable access in your browser settings."
+                : `Cannot access camera: ${error.message}`;
         }
     };
 
@@ -661,27 +583,15 @@ async function setupLocalCameraUI() {
             stopLocalCamera();
             return;
         }
-        const selectedId = localCameraSelect.value || activeCameraId;
-        await startLocalCamera(selectedId || null);
-    });
-
-    localCameraSelect.addEventListener("change", async (event) => {
-        const nextId = event.target.value;
-        activeCameraId = nextId || null;
-        if (localMediaStream) {
-            await startLocalCamera(activeCameraId);
-        } else if (hasRequestedCameraPermission) {
-            setHint("Selected camera ready. Enable the preview to start.");
-        }
+        await startLocalCamera(currentFacingMode);
     });
 
     localCameraSwitch.addEventListener("click", async () => {
-        await refreshCameraOptions();
+        const nextFacing = currentFacingMode === "environment" ? "user" : "environment";
+        await startLocalCamera(nextFacing);
     });
 
-    navigator.mediaDevices.addEventListener?.("devicechange", () => refreshCameraOptions({ preserveHint: Boolean(localMediaStream) }));
     window.addEventListener("beforeunload", stopLocalCamera);
-    await refreshCameraOptions();
 }
 
 function initializeEventListeners() {

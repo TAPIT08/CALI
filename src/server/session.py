@@ -158,15 +158,7 @@ class ExerciseSession:
         try:
             runtime_cfg = load_runtime_config(str(self.runtime_config_path))
             available_cameras = enumerate_cameras()
-            camera_index = config.camera_index
-            camera_source = config.camera_source or os.getenv("CAMERA_SOURCE")
-            camera_target: int | str
-            if camera_source:
-                camera_target = camera_source
-            else:
-                if camera_index < 0:
-                    camera_index = available_cameras[0] if available_cameras else 0
-                camera_target = camera_index
+            camera_target = self._resolve_camera_target(config, available_cameras)
             device_pref = runtime_cfg.latency.get("use_gpu", "auto")
             device = self._resolve_device(device_pref)
             detector = YOLOExerciseDetector(
@@ -201,7 +193,7 @@ class ExerciseSession:
             if not cap.isOpened():
                 raise RuntimeError(
                     f"Failed to open camera source '{camera_target}'. "
-                    "Set CAMERA_SOURCE to a valid RTSP/HTTP stream for remote deployments or ensure the device index exists."
+                    "Provide CAMERA_SOURCE as an RTSP/HTTP stream or connect a local camera."
                 )
             self._configure_capture(cap, runtime_cfg.frame)
             all_exercises = list(coach.thresholds.keys())
@@ -235,7 +227,7 @@ class ExerciseSession:
                 ended_at=start_time,
                 session_metadata={"goal_reps": config.goal_reps},
             )
-            status_camera = camera_index if isinstance(camera_target, int) else None
+            status_camera = camera_target if isinstance(camera_target, int) else None
             self._status = {
                 "running": True,
                 "message": "session running",
@@ -336,7 +328,7 @@ class ExerciseSession:
                         "level": exercise_state.level,
                     },
                     "feedback": [self._serialize_feedback(msg) for msg in feedback],
-                    "camera": camera_index,
+                    "camera": status_camera,
                     "exercise": summary.exercise,
                     "goalReps": config.goal_reps,
                 }
@@ -425,6 +417,46 @@ class ExerciseSession:
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, target_width)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, target_height)
         cap.set(cv2.CAP_PROP_FPS, 30)
+
+    @staticmethod
+    def _looks_like_stream_url(source: str) -> bool:
+        if not source:
+            return False
+        parsed = urlparse(source)
+        if not parsed.scheme:
+            return False
+        return parsed.scheme.lower() in {"rtsp", "rtmp", "rtmps", "http", "https", "mjpeg"}
+
+    def _resolve_camera_target(self, config: SessionConfig, available_cameras: List[int]) -> int | str:
+        env_source = os.getenv("CAMERA_SOURCE", "").strip()
+        provided_source = (config.camera_source or "").strip()
+        source = provided_source or env_source
+
+        def _auto_pick_camera() -> int:
+            if config.camera_index >= 0:
+                return config.camera_index
+            if available_cameras:
+                return available_cameras[0]
+            raise RuntimeError(
+                "No camera devices detected. Provide CAMERA_SOURCE with an RTSP/HTTP stream or attach a local camera."
+            )
+
+        if source:
+            normalized = source.lower()
+            if normalized in {"0", "default", "auto"}:
+                return _auto_pick_camera()
+            if self._looks_like_stream_url(source):
+                return source
+            try:
+                return int(source)
+            except ValueError:
+                logger.warning("CAMERA_SOURCE '%s' not understood; falling back to automatic selection", source)
+                return _auto_pick_camera()
+
+        if env_source and self._looks_like_stream_url(env_source):
+            return env_source
+
+        return _auto_pick_camera()
 
     @staticmethod
     def _encode_frame(frame: np.ndarray) -> str:
