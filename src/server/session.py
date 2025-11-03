@@ -9,6 +9,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import AsyncGenerator, Dict, List, Optional
+from urllib.parse import urlparse
 
 import cv2
 import numpy as np
