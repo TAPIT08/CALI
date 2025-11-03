@@ -45,6 +45,43 @@ const reminderForm = document.getElementById("reminder-form");
 const reminderMessage = document.getElementById("reminder-message");
 const reminderDatetime = document.getElementById("reminder-datetime");
 
+const localCameraWrapper = document.createElement("div");
+localCameraWrapper.id = "local-camera-wrapper";
+localCameraWrapper.className = "local-camera";
+const localCameraVideo = document.createElement("video");
+localCameraVideo.id = "local-camera-preview";
+localCameraVideo.autoplay = true;
+localCameraVideo.playsInline = true;
+localCameraVideo.muted = true;
+localCameraVideo.controls = false;
+const localCameraControls = document.createElement("div");
+localCameraControls.className = "local-camera-controls";
+const localCameraToggle = document.createElement("button");
+localCameraToggle.type = "button";
+localCameraToggle.className = "secondary";
+localCameraToggle.textContent = "Enable Local Camera";
+const localCameraSwitch = document.createElement("button");
+localCameraSwitch.type = "button";
+localCameraSwitch.className = "secondary";
+localCameraSwitch.textContent = "Switch Camera";
+localCameraSwitch.disabled = true;
+const localCameraHint = document.createElement("p");
+localCameraHint.className = "hint";
+localCameraHint.id = "local-camera-hint";
+localCameraHint.textContent = "Enable camera to preview locally.";
+localCameraWrapper.appendChild(localCameraVideo);
+localCameraControls.appendChild(localCameraToggle);
+localCameraControls.appendChild(localCameraSwitch);
+localCameraWrapper.appendChild(localCameraControls);
+localCameraWrapper.appendChild(localCameraHint);
+if (streamCard) {
+    streamCard.prepend(localCameraWrapper);
+}
+
+let localMediaStream = null;
+let currentFacingMode = "environment";
+let canSwitchCamera = false;
+
 let socket = null;
 let statusPollTimer = null;
 let lastFrameTimestamp = 0;
@@ -479,6 +516,79 @@ async function handleReminderSubmit(event) {
     }
 }
 
+async function setupLocalCameraUI() {
+    if (!navigator.mediaDevices?.getUserMedia) {
+        localCameraToggle.disabled = true;
+        localCameraHint.textContent = "Camera preview is not supported in this browser.";
+        return;
+    }
+    try {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        canSwitchCamera = devices.filter((device) => device.kind === "videoinput").length > 1;
+        localCameraSwitch.hidden = !canSwitchCamera;
+    } catch (err) {
+        console.warn("Could not enumerate devices", err);
+    }
+
+    const stopLocalCamera = () => {
+        if (localMediaStream) {
+            localMediaStream.getTracks().forEach((track) => track.stop());
+            localMediaStream = null;
+        }
+        localCameraVideo.srcObject = null;
+        localCameraToggle.textContent = "Enable Local Camera";
+        localCameraHint.textContent = "Enable camera to preview locally.";
+        localCameraSwitch.disabled = true;
+    };
+
+    const startLocalCamera = async (facingMode) => {
+        try {
+            const constraints = {
+                audio: false,
+                video: {
+                    facingMode: { ideal: facingMode },
+                    width: { ideal: 1280 },
+                    height: { ideal: 720 },
+                },
+            };
+            const stream = await navigator.mediaDevices.getUserMedia(constraints);
+            if (localMediaStream) {
+                localMediaStream.getTracks().forEach((track) => track.stop());
+            }
+            localMediaStream = stream;
+            localCameraVideo.srcObject = stream;
+            currentFacingMode = facingMode;
+            localCameraToggle.textContent = "Disable Local Camera";
+            localCameraHint.textContent = "Local preview active.";
+            localCameraSwitch.disabled = !canSwitchCamera;
+        } catch (error) {
+            console.error("Camera access failed", error);
+            if (facingMode === "environment") {
+                return startLocalCamera("user");
+            }
+            stopLocalCamera();
+            localCameraHint.textContent = error.name === "NotAllowedError"
+                ? "Camera permission denied. Enable access in your browser settings."
+                : `Cannot access camera: ${error.message}`;
+        }
+    };
+
+    localCameraToggle.addEventListener("click", async () => {
+        if (localMediaStream) {
+            stopLocalCamera();
+            return;
+        }
+        await startLocalCamera(currentFacingMode);
+    });
+
+    localCameraSwitch.addEventListener("click", async () => {
+        const nextFacing = currentFacingMode === "environment" ? "user" : "environment";
+        await startLocalCamera(nextFacing);
+    });
+
+    window.addEventListener("beforeunload", stopLocalCamera);
+}
+
 function initializeEventListeners() {
     controlForm?.addEventListener("submit", startSession);
     stopBtn?.addEventListener("click", stopSession);
@@ -493,6 +603,7 @@ function initializeEventListeners() {
 
 async function initializeApp() {
     initializeEventListeners();
+    setupLocalCameraUI().catch((err) => console.error("Camera UI setup failed", err));
     try {
         await Promise.all([loadDashboard(), loadSessions()]);
     } catch (err) {
